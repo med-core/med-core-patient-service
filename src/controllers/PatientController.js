@@ -142,7 +142,7 @@ export const listPatients = async (req, res) => {
 
 const createDiagnostic = async (req, res) => {
   const { patientId } = req.params;
-  const doctorId = req.user.id;
+  const doctorId = req.user.id; // viene del gateway
   const files = req.files || [];
 
   try {
@@ -150,35 +150,72 @@ const createDiagnostic = async (req, res) => {
     const formData = new FormData();
 
     // Agregar campos del body
-    for (const key in req.body) {
-      formData.append(key, req.body[key]);
-    }
-
+    Object.entries(req.body).forEach(([key, value]) => formData.append(key, value));
     formData.append("patientId", patientId);
     formData.append("doctorId", doctorId);
 
-    // Agregar archivos
+    // Archivos
     for (const file of files) {
       formData.append("files", fs.createReadStream(file.path), file.originalname);
     }
 
-    // Llamar al microservicio diagnostic
-    const response = await diagnosticClient.post("/diagnostics", formData, {
-      headers: formData.getHeaders(),
+    const response = await diagnosticClient.post(`/patients/${patientId}/diagnostics`, formData, {
+      headers: {
+        ...formData.getHeaders(),
+        Authorization: req.headers.authorization, // JWT pasado por gateway
+      },
     });
 
-    // Eliminar archivos temporales
+    // Limpiar archivos
     files.forEach(f => fs.unlinkSync(f.path));
 
     res.status(201).json({ message: "Diagnóstico creado", data: response.data });
   } catch (error) {
-    // Eliminar archivos si hay error
-    files.forEach(f => fs.unlinkSync(f.path));
+    files.forEach(f => {
+      try { fs.unlinkSync(f.path); } catch {}
+    });
 
-    console.error("Error creando diagnóstico:", error);
-    res.status(400).json({ message: error.response?.data?.message || error.message });
+    console.error("Error creando diagnóstico:", error.message);
+    res.status(error.response?.status || 500).json({
+      message: error.response?.data?.message || "Error al crear diagnóstico",
+      details: error.message,
+    });
   }
 };
+
+export const advancedSearch = async (req, res) => {
+  try {
+    const { diagnostic, dateFrom, dateTo } = req.query;
+
+    const filters = { role: 'PACIENTE' };
+
+    // Filtro por diagnóstico
+    if (diagnostic) {
+      filters.diagnostic = {
+        contains: diagnostic,
+        mode: 'insensitive', // no distingue mayúsculas/minúsculas
+      };
+    }
+
+    // Filtro por rango de fechas (createdAt)
+    if (dateFrom || dateTo) {
+      filters.createdAt = {};
+      if (dateFrom) filters.createdAt.gte = new Date(dateFrom);
+      if (dateTo) filters.createdAt.lte = new Date(dateTo);
+    }
+
+    const patients = await prisma.users.findMany({
+      where: filters,
+      orderBy: { createdAt: 'desc' },
+    });
+
+    res.json({ success: true, data: patients });
+  } catch (error) {
+    console.error('Error en búsqueda avanzada:', error);
+    res.status(500).json({ success: false, message: 'Error en búsqueda avanzada' });
+  }
+};
+
 export default {
   createPatient,
   getPatientById,
@@ -186,4 +223,5 @@ export default {
   updatePatientState,
   listPatients,
   createDiagnostic,
+  advancedSearch
 };

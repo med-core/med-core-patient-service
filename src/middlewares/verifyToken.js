@@ -8,7 +8,7 @@ export const verifyToken = async (req, res, next) => {
     }
 
     // Llamada al microservicio Auth para validar el token
-    const response = await axios.get("http://med-core-auth-service:3000/auth/verify", {
+    const response = await axios.get("http://med-core-auth-service:3000/api/v1/auth/verify", {
       headers: { Authorization: `Bearer ${token}` },
     });
 

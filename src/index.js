@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import { connectDB, getPrismaClient } from "./config/database.js";
 import patientRoutes from "./router/patientRoutes.js";
+import {sendError} from "./utils/errorHandler.js"
 
 // Instancia de Express
 const app = express();
@@ -17,11 +18,14 @@ app.get("/health", (req, res) => {
 });
 
 // Rutas reales del microservicio
-app.use("/api/v1/patient", patientRoutes);
+app.use("/api/v1/patients", patientRoutes);
 
 // Ruta de prueba
 app.get("/", (req, res) => {
   res.send("Patient Service funcionando correctamente");
+});
+app.use((err, req, res, next) => {
+  sendError(err, res);
 });
 
 // Función principal para iniciar el servidor de forma asíncrona
