@@ -172,7 +172,7 @@ const createDiagnostic = async (req, res) => {
     res.status(201).json({ message: "Diagnóstico creado", data: response.data });
   } catch (error) {
     files.forEach(f => {
-      try { fs.unlinkSync(f.path); } catch {}
+      try { fs.unlinkSync(f.path); } catch { }
     });
 
     console.error("Error creando diagnóstico:", error.message);
@@ -186,35 +186,41 @@ const createDiagnostic = async (req, res) => {
 export const advancedSearch = async (req, res) => {
   try {
     const { diagnostic, dateFrom, dateTo } = req.query;
+    console.log("Parámetros recibidos:", { diagnostic, dateFrom, dateTo });
 
-    const filters = { role: 'PACIENTE' };
+    const filters = {};
 
-    // Filtro por diagnóstico
     if (diagnostic) {
-      filters.diagnostic = {
-        contains: diagnostic,
-        mode: 'insensitive', // no distingue mayúsculas/minúsculas
-      };
+      filters.title = { contains: diagnostic, mode: "insensitive" };
     }
 
-    // Filtro por rango de fechas (createdAt)
     if (dateFrom || dateTo) {
-      filters.createdAt = {};
-      if (dateFrom) filters.createdAt.gte = new Date(dateFrom);
-      if (dateTo) filters.createdAt.lte = new Date(dateTo);
+      const gte = dateFrom ? new Date(dateFrom + "T00:00:00Z") : undefined;
+      const lte = dateTo ? new Date(dateTo + "T23:59:59Z") : undefined;
+      filters.diagnosisDate = {};
+      if (gte) filters.diagnosisDate.gte = gte;
+      if (lte) filters.diagnosisDate.lte = lte;
     }
 
-    const patients = await prisma.users.findMany({
+    console.log("Filtros generados:", filters);
+
+    const diagnostics = await prisma.diagnostic.findMany({
       where: filters,
-      orderBy: { createdAt: 'desc' },
+      orderBy: { diagnosisDate: "desc" },
     });
 
-    res.json({ success: true, data: patients });
-  } catch (error) {
-    console.error('Error en búsqueda avanzada:', error);
-    res.status(500).json({ success: false, message: 'Error en búsqueda avanzada' });
+    console.log("Diagnostics encontrados:", diagnostics.length);
+
+    return res.status(200).json({
+      message: "Búsqueda completada",
+      data: diagnostics,
+    });
+  } catch (err) {
+    console.error("Error en búsqueda avanzada:", err);
+    return res.status(500).json({ success: false, message: "Error en búsqueda avanzada", error: err.message });
   }
 };
+
 
 export default {
   createPatient,
