@@ -206,7 +206,7 @@ export const getPatientDiagnostics = async (req, res) => {
     }
 
     // Proxy hacia el Diagnostic Service
-    const diagnosticsResp = await axios.get(`${DIAGNOSTIC_SERVICE_URL}/api/patients/${patientId}/diagnostics`, {
+    const diagnosticsResp = await axios.get(`${DIAGNOSTIC_SERVICE_URL}/api/v1/patients/${patientId}/diagnostics`, {
       headers: {
         Authorization: req.headers.authorization, // JWT del gateway
       },
