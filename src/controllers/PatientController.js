@@ -2,8 +2,11 @@ import { PrismaClient } from '@prisma/client';
 import crypto from 'crypto';
 import fs from 'fs';
 import diagnosticClient from '../utils/diagnosticClient.js';
+import axios from 'axios';
 
 const prisma = new PrismaClient();
+const DIAGNOSTIC_SERVICE_URL = process.env.DIAGNOSTIC_SERVICE_URL || "http://med-core-diagnostic-service:3000";
+const USER_SERVICE_URL = process.env.USER_SERVICE_URL || "http://med-core-user-service:3000";
 
 // Calcular edad automáticamente
 export const calculateAge = (dateOfBirth) => {
@@ -183,38 +186,132 @@ const createDiagnostic = async (req, res) => {
   }
 };
 
+
+export const getPatientDiagnostics = async (req, res) => {
+  const { patientId } = req.params;
+  const user = req.user;
+
+  try {
+    // Validación de roles
+    if (user.role === "ENFERMERO") {
+      return res.status(403).json({ message: "Los enfermeros no tienen acceso a diagnósticos." });
+    }
+
+    if (user.role === "PACIENTE") {
+      // Validar que el paciente solo vea sus propios diagnósticos
+      const resp = await axios.get(`${PATIENT_SERVICE_URL}/patients/user/${user.id}`);
+      if (!resp.data || resp.data.id !== patientId) {
+        return res.status(403).json({ message: "No puedes ver diagnósticos de otros pacientes." });
+      }
+    }
+
+    // Proxy hacia el Diagnostic Service
+    const diagnosticsResp = await axios.get(`${DIAGNOSTIC_SERVICE_URL}/api/patients/${patientId}/diagnostics`, {
+      headers: {
+        Authorization: req.headers.authorization, // JWT del gateway
+      },
+    });
+
+    res.json(diagnosticsResp.data);
+  } catch (error) {
+    console.error("Error obteniendo diagnósticos del paciente:", error.message);
+    res.status(error.response?.status || 500).json({
+      message: error.response?.data?.message || "Error interno al obtener diagnósticos.",
+      details: error.message,
+    });
+  }
+};
+
+//======================ADVANCEDSEARCH=======================
+
 export const advancedSearch = async (req, res) => {
   try {
     const { diagnostic, dateFrom, dateTo } = req.query;
     console.log("Parámetros recibidos:", { diagnostic, dateFrom, dateTo });
 
-    const filters = {};
-
-    if (diagnostic) {
-      filters.title = { contains: diagnostic, mode: "insensitive" };
+    // === 1. Normalizar fechas ===
+    let gte, lte;
+    if (dateFrom) {
+      const d = new Date(dateFrom + "T00:00:00Z");
+      if (isNaN(d.getTime())) return res.status(400).json({ message: "dateFrom inválida" });
+      gte = d;
+    }
+    if (dateTo) {
+      const d = new Date(dateTo + "T23:59:59Z");
+      if (isNaN(d.getTime())) return res.status(400).json({ message: "dateTo inválida" });
+      lte = d;
     }
 
-    if (dateFrom || dateTo) {
-      const gte = dateFrom ? new Date(dateFrom + "T00:00:00Z") : undefined;
-      const lte = dateTo ? new Date(dateTo + "T23:59:59Z") : undefined;
-      filters.diagnosisDate = {};
-      if (gte) filters.diagnosisDate.gte = gte;
-      if (lte) filters.diagnosisDate.lte = lte;
+    const params = {};
+    if (diagnostic) params.diagnostic = diagnostic;
+    if (gte) params.dateFrom = gte.toISOString().slice(0, 10);
+    if (lte) params.dateTo = lte.toISOString().slice(0, 10);
+
+    const headers = {};
+    if (req.headers.authorization) headers["Authorization"] = req.headers.authorization;
+
+    // === 2. Llamar a diagnostic-service ===
+    let diagResp;
+    try {
+      diagResp = await axios.get(`${DIAGNOSTIC_SERVICE_URL}/api/v1/diagnostics/search`, {
+        params,
+        headers,
+      });
+    } catch (err) {
+      console.error("Error consultando diagnostic-service:", err.message);
+      const status = err.response?.status || 500;
+      const msg = err.response?.data?.message || "Error contactando diagnostic-service";
+      return res.status(status).json({ message: msg });
     }
 
-    console.log("Filtros generados:", filters);
+    const diagnostics = Array.isArray(diagResp.data?.data) ? diagResp.data.data : [];
+    console.log("Diagnósticos obtenidos:", diagnostics.length);
 
-    const diagnostics = await prisma.diagnostic.findMany({
-      where: filters,
-      orderBy: { diagnosisDate: "desc" },
+    const patientIds = [...new Set(diagnostics.map(d => String(d.patientId)).filter(Boolean))];
+    if (patientIds.length === 0) {
+      return res.status(200).json({ message: "Búsqueda completada", data: [] });
+    }
+
+    // === 3. Llamar a user-service (bulk) ===
+    let users = [];
+    try {
+      const userResp = await axios.post(
+        `${USER_SERVICE_URL}/api/v1/users/bulk`,
+        { userIds: patientIds },
+        { headers }
+      );
+      users = Array.isArray(userResp.data?.data) ? userResp.data.data : [];
+    } catch (err) {
+      console.warn("Error al obtener usuarios:", err.message);
+      // Continúa sin usuarios
+    }
+
+    const userById = Object.fromEntries(users.map(u => [u.id, u]));
+
+    // === 4. Enriquecer con diagnósticos ===
+    const enriched = patientIds.map(id => {
+      const user = userById[id];
+      if (!user) return null; // Usuario no encontrado o no es paciente
+
+      const patientDiagnostics = diagnostics.filter(d => String(d.patientId) === id);
+      return {
+        patient: user,
+        diagnostics: patientDiagnostics,
+      };
+    }).filter(Boolean);
+
+    // === 5. Ordenar por nombre ===
+    enriched.sort((a, b) => {
+      const nameA = a.patient.fullname ?? "";
+      const nameB = b.patient.fullname ?? "";
+      return nameA.localeCompare(nameB, "es", { sensitivity: "base" });
     });
-
-    console.log("Diagnostics encontrados:", diagnostics.length);
 
     return res.status(200).json({
       message: "Búsqueda completada",
-      data: diagnostics,
+      data: enriched,
     });
+
   } catch (err) {
     console.error("Error en búsqueda avanzada:", err);
     return res.status(500).json({ success: false, message: "Error en búsqueda avanzada", error: err.message });
@@ -229,5 +326,6 @@ export default {
   updatePatientState,
   listPatients,
   createDiagnostic,
+  getPatientDiagnostics,
   advancedSearch
 };

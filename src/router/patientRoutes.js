@@ -5,6 +5,7 @@ import PatientController, {
   updatePatient,
   updatePatientState,
   listPatients,
+  getPatientDiagnostics,
   advancedSearch
 } from '../controllers/PatientController.js';
 import {
@@ -15,6 +16,7 @@ import { attachUserFromToken } from '../middlewares/attachUserFromToken.js';
 import { uploadDiagnosticMultiple } from '../config/multer.js';
 const router = express.Router();
 
+router.get('/:patientId/diagnostics', attachUserFromToken, PatientController.getPatientDiagnostics);
 // Rutas de pacientes
 router.post('/', validatePatientCreation, createPatient); // Crear paciente
 router.get('/:id', getPatientById); // Obtener paciente por ID
