@@ -1,39 +1,45 @@
-import { PrismaClient } from '@prisma/client';
-import crypto from 'crypto';
-import fs from 'fs';
-import diagnosticClient from '../utils/diagnosticClient.js';
-import axios from 'axios';
+import { PrismaClient } from "@prisma/client";
+import crypto from "crypto";
+import fs from "fs";
+import axios from "axios";
+import { sendError } from "../utils/errorHandler.js";
 
 const prisma = new PrismaClient();
+
 const DIAGNOSTIC_SERVICE_URL = process.env.DIAGNOSTIC_SERVICE_URL || "http://med-core-diagnostic-service:3000";
 const USER_SERVICE_URL = process.env.USER_SERVICE_URL || "http://med-core-user-service:3000";
+const DEPARTMENT_SERVICE_URL = process.env.DEPARTMENT_SERVICE_URL || "http://med-core-department-service:3000";
 
-// Calcular edad automáticamente
-export const calculateAge = (dateOfBirth) => {
+// === CALCULAR EDAD ===
+const calculateAge = (dateOfBirth) => {
   const diff = Date.now() - dateOfBirth.getTime();
   const ageDate = new Date(diff);
   return Math.abs(ageDate.getUTCFullYear() - 1970);
 };
 
-// Crear paciente
+// === CREAR PACIENTE ===
 export const createPatient = async (req, res) => {
   try {
     const { email, fullname, date_of_birth, phone } = req.body;
 
-    // Verificar si el paciente ya existe por email
-    const existing = await prisma.users.findUnique({ where: { email } });
-    if (existing)
-      return res.status(400).json({ message: 'El correo ya está registrado' });
+    if (!email || !fullname || !date_of_birth) {
+      return res.status(400).json({ message: "Faltan campos obligatorios" });
+    }
 
-    // Calcular edad
+    // Verificar duplicado por email
+    const existing = await prisma.users.findUnique({ where: { email } });
+    if (existing) {
+      return res.status(400).json({ message: "El correo ya está registrado" });
+    }
+
     const birthDate = new Date(date_of_birth);
     const age = calculateAge(birthDate);
-    if (age < 0 || age > 100)
-      return res.status(400).json({ message: 'La edad debe estar entre 0 y 100 años' });
+    if (age < 0 || age > 100) {
+      return res.status(400).json({ message: "La edad debe estar entre 0 y 100 años" });
+    }
 
-    // Generar código de verificación
-    const verificationCode = crypto.randomBytes(3).toString('hex').toUpperCase();
-    const verificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24h
+    const verificationCode = crypto.randomBytes(3).toString("hex").toUpperCase();
+    const verificationExpires = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
     const newPatient = await prisma.users.create({
       data: {
@@ -41,42 +47,52 @@ export const createPatient = async (req, res) => {
         fullname,
         date_of_birth: birthDate,
         phone,
-        role: 'PACIENTE',
+        role: "PACIENTE",
         verificationCode,
         verificationExpires,
-        status: 'PENDING',
-        current_password: 'TEMPORARY', // o generar uno aleatorio
+        status: "PENDING",
+        current_password: "TEMPORARY",
       },
     });
 
-    res.status(201).json({ message: 'Paciente creado exitosamente', patient: newPatient });
+    console.log(`Paciente creado: ${newPatient.id} - ${email}`);
+    res.status(201).json({ message: "Paciente creado exitosamente", patient: newPatient });
+
   } catch (error) {
-    console.error('Error al crear paciente:', error);
-    res.status(500).json({ message: 'Error interno del servidor' });
+    console.error("Error en createPatient:", error.message);
+    sendError(error, res);
   }
 };
 
-// Obtener paciente por ID
+// === OBTENER POR ID ===
 export const getPatientById = async (req, res) => {
   try {
     const { id } = req.params;
-    const patient = await prisma.users.findUnique({ where: { id } });
-    if (!patient) return res.status(404).json({ message: 'Paciente no encontrado' });
+    const patient = await prisma.users.findUnique({
+      where: { id },
+      include: { patient: true },
+    });
+
+    if (!patient) {
+      return res.status(404).json({ message: "Paciente no encontrado" });
+    }
+
     res.json(patient);
   } catch (error) {
-    console.error('Error al obtener paciente:', error);
-    res.status(500).json({ message: 'Error interno del servidor' });
+    sendError(error, res);
   }
 };
 
-// Actualizar paciente
+// === ACTUALIZAR PACIENTE ===
 export const updatePatient = async (req, res) => {
   try {
     const { id } = req.params;
     const { fullname, date_of_birth, phone } = req.body;
 
     const patient = await prisma.users.findUnique({ where: { id } });
-    if (!patient) return res.status(404).json({ message: 'Paciente no encontrado' });
+    if (!patient) {
+      return res.status(404).json({ message: "Paciente no encontrado" });
+    }
 
     const updated = await prisma.users.update({
       where: { id },
@@ -87,35 +103,34 @@ export const updatePatient = async (req, res) => {
       },
     });
 
-    res.json({ message: 'Paciente actualizado correctamente', patient: updated });
+    res.json({ message: "Paciente actualizado", patient: updated });
   } catch (error) {
-    console.error('Error al actualizar paciente:', error);
-    res.status(500).json({ message: 'Error interno del servidor' });
+    sendError(error, res);
   }
 };
 
-// Cambiar estado del paciente
+// === CAMBIAR ESTADO ===
 export const updatePatientState = async (req, res) => {
   try {
     const { id } = req.params;
-    const { status } = req.body; // ACTIVO o INACTIVO
+    const { status } = req.body;
 
-    const patient = await prisma.users.findUnique({ where: { id } });
-    if (!patient) return res.status(404).json({ message: 'Paciente no encontrado' });
+    if (!["ACTIVE", "INACTIVE", "PENDING"].includes(status)) {
+      return res.status(400).json({ message: "Estado inválido" });
+    }
 
     const updated = await prisma.users.update({
       where: { id },
       data: { status },
     });
 
-    res.json({ message: 'Estado actualizado correctamente', patient: updated });
+    res.json({ message: "Estado actualizado", patient: updated });
   } catch (error) {
-    console.error('Error al cambiar estado:', error);
-    res.status(500).json({ message: 'Error interno del servidor' });
+    sendError(error, res);
   }
 };
 
-// Listar pacientes (paginado)
+// === LISTAR PACIENTES ===
 export const listPatients = async (req, res) => {
   try {
     const { page = 1, limit = 10 } = req.query;
@@ -123,12 +138,13 @@ export const listPatients = async (req, res) => {
 
     const [patients, total] = await Promise.all([
       prisma.users.findMany({
-        where: { role: 'PACIENTE' },
+        where: { role: "PACIENTE" },
         skip,
         take: Number(limit),
-        orderBy: { createdAt: 'desc' },
+        orderBy: { createdAt: "desc" },
+        include: { patient: true },
       }),
-      prisma.users.count({ where: { role: 'PACIENTE' } }),
+      prisma.users.count({ where: { role: "PACIENTE" } }),
     ]);
 
     res.json({
@@ -138,107 +154,96 @@ export const listPatients = async (req, res) => {
       patients,
     });
   } catch (error) {
-    console.error('Error al listar pacientes:', error);
-    res.status(500).json({ message: 'Error interno del servidor' });
+    sendError(error, res);
   }
 };
 
-const createDiagnostic = async (req, res) => {
+// === CREAR DIAGNÓSTICO (proxy) ===
+export const createDiagnostic = async (req, res) => {
   const { patientId } = req.params;
-  const doctorId = req.user.id; // viene del gateway
+  const doctorId = req.user?.id;
   const files = req.files || [];
 
   try {
     const FormData = (await import("form-data")).default;
     const formData = new FormData();
 
-    // Agregar campos del body
     Object.entries(req.body).forEach(([key, value]) => formData.append(key, value));
     formData.append("patientId", patientId);
     formData.append("doctorId", doctorId);
 
-    // Archivos
     for (const file of files) {
       formData.append("files", fs.createReadStream(file.path), file.originalname);
     }
 
-    const response = await diagnosticClient.post(`/patients/${patientId}/diagnostics`, formData, {
-      headers: {
-        ...formData.getHeaders(),
-        Authorization: req.headers.authorization, // JWT pasado por gateway
-      },
-    });
+    const response = await axios.post(
+      `${DIAGNOSTIC_SERVICE_URL}/api/v1/patients/${patientId}/diagnostics`,
+      formData,
+      {
+        headers: {
+          ...formData.getHeaders(),
+          Authorization: req.headers.authorization,
+        },
+      }
+    );
 
-    // Limpiar archivos
-    files.forEach(f => fs.unlinkSync(f.path));
+    files.forEach(f => {
+      try { fs.unlinkSync(f.path); } catch {}
+    });
 
     res.status(201).json({ message: "Diagnóstico creado", data: response.data });
   } catch (error) {
     files.forEach(f => {
-      try { fs.unlinkSync(f.path); } catch { }
+      try { fs.unlinkSync(f.path); } catch {}
     });
-
     console.error("Error creando diagnóstico:", error.message);
-    res.status(error.response?.status || 500).json({
-      message: error.response?.data?.message || "Error al crear diagnóstico",
-      details: error.message,
-    });
+    sendError(error, res);
   }
 };
 
-
+// === OBTENER DIAGNÓSTICOS DEL PACIENTE ===
 export const getPatientDiagnostics = async (req, res) => {
   const { patientId } = req.params;
   const user = req.user;
 
   try {
-    // Validación de roles
     if (user.role === "ENFERMERO") {
       return res.status(403).json({ message: "Los enfermeros no tienen acceso a diagnósticos." });
     }
 
     if (user.role === "PACIENTE") {
-      // Validar que el paciente solo vea sus propios diagnósticos
-      const resp = await axios.get(`${PATIENT_SERVICE_URL}/patients/user/${user.id}`);
-      if (!resp.data || resp.data.id !== patientId) {
+      const resp = await axios.get(`${USER_SERVICE_URL}/api/v1/users/${user.id}`);
+      if (resp.data.id !== patientId) {
         return res.status(403).json({ message: "No puedes ver diagnósticos de otros pacientes." });
       }
     }
 
-    // Proxy hacia el Diagnostic Service
-    const diagnosticsResp = await axios.get(`${DIAGNOSTIC_SERVICE_URL}/api/v1/patients/${patientId}/diagnostics`, {
-      headers: {
-        Authorization: req.headers.authorization, // JWT del gateway
-      },
-    });
+    const diagnosticsResp = await axios.get(
+      `${DIAGNOSTIC_SERVICE_URL}/api/v1/patients/${patientId}/diagnostics`,
+      { headers: { Authorization: req.headers.authorization } }
+    );
 
     res.json(diagnosticsResp.data);
   } catch (error) {
-    console.error("Error obteniendo diagnósticos del paciente:", error.message);
-    res.status(error.response?.status || 500).json({
-      message: error.response?.data?.message || "Error interno al obtener diagnósticos.",
-      details: error.message,
-    });
+    sendError(error, res);
   }
 };
 
-//======================ADVANCEDSEARCH=======================
-
+// === BÚSQUEDA AVANZADA ===
 export const advancedSearch = async (req, res) => {
   try {
     const { diagnostic, dateFrom, dateTo } = req.query;
-    console.log("Parámetros recibidos:", { diagnostic, dateFrom, dateTo });
+    console.log("Búsqueda avanzada:", { diagnostic, dateFrom, dateTo });
 
-    // === 1. Normalizar fechas ===
     let gte, lte;
     if (dateFrom) {
       const d = new Date(dateFrom + "T00:00:00Z");
-      if (isNaN(d.getTime())) return res.status(400).json({ message: "dateFrom inválida" });
+      if (isNaN(d)) return res.status(400).json({ message: "dateFrom inválida" });
       gte = d;
     }
     if (dateTo) {
       const d = new Date(dateTo + "T23:59:59Z");
-      if (isNaN(d.getTime())) return res.status(400).json({ message: "dateTo inválida" });
+      if (isNaN(d)) return res.status(400).json({ message: "dateTo inválida" });
       lte = d;
     }
 
@@ -247,32 +252,20 @@ export const advancedSearch = async (req, res) => {
     if (gte) params.dateFrom = gte.toISOString().slice(0, 10);
     if (lte) params.dateTo = lte.toISOString().slice(0, 10);
 
-    const headers = {};
-    if (req.headers.authorization) headers["Authorization"] = req.headers.authorization;
+    const headers = req.headers.authorization ? { Authorization: req.headers.authorization } : {};
 
-    // === 2. Llamar a diagnostic-service ===
-    let diagResp;
-    try {
-      diagResp = await axios.get(`${DIAGNOSTIC_SERVICE_URL}/api/v1/diagnostics/search`, {
-        params,
-        headers,
-      });
-    } catch (err) {
-      console.error("Error consultando diagnostic-service:", err.message);
-      const status = err.response?.status || 500;
-      const msg = err.response?.data?.message || "Error contactando diagnostic-service";
-      return res.status(status).json({ message: msg });
-    }
+    const diagResp = await axios.get(`${DIAGNOSTIC_SERVICE_URL}/api/v1/diagnostics/search`, {
+      params,
+      headers,
+    });
 
     const diagnostics = Array.isArray(diagResp.data?.data) ? diagResp.data.data : [];
-    console.log("Diagnósticos obtenidos:", diagnostics.length);
-
     const patientIds = [...new Set(diagnostics.map(d => String(d.patientId)).filter(Boolean))];
+
     if (patientIds.length === 0) {
-      return res.status(200).json({ message: "Búsqueda completada", data: [] });
+      return res.json({ message: "Búsqueda completada", data: [] });
     }
 
-    // === 3. Llamar a user-service (bulk) ===
     let users = [];
     try {
       const userResp = await axios.post(
@@ -282,50 +275,83 @@ export const advancedSearch = async (req, res) => {
       );
       users = Array.isArray(userResp.data?.data) ? userResp.data.data : [];
     } catch (err) {
-      console.warn("Error al obtener usuarios:", err.message);
-      // Continúa sin usuarios
+      console.warn("Error obteniendo usuarios:", err.message);
     }
 
     const userById = Object.fromEntries(users.map(u => [u.id, u]));
 
-    // === 4. Enriquecer con diagnósticos ===
     const enriched = patientIds.map(id => {
       const user = userById[id];
-      if (!user) return null; // Usuario no encontrado o no es paciente
-
-      const patientDiagnostics = diagnostics.filter(d => String(d.patientId) === id);
+      if (!user) return null;
       return {
         patient: user,
-        diagnostics: patientDiagnostics,
+        diagnostics: diagnostics.filter(d => String(d.patientId) === id),
       };
     }).filter(Boolean);
 
-    // === 5. Ordenar por nombre ===
-    enriched.sort((a, b) => {
-      const nameA = a.patient.fullname ?? "";
-      const nameB = b.patient.fullname ?? "";
-      return nameA.localeCompare(nameB, "es", { sensitivity: "base" });
-    });
+    enriched.sort((a, b) => (a.patient.fullname ?? "").localeCompare(b.patient.fullname ?? "", "es"));
 
-    return res.status(200).json({
-      message: "Búsqueda completada",
-      data: enriched,
-    });
-
-  } catch (err) {
-    console.error("Error en búsqueda avanzada:", err);
-    return res.status(500).json({ success: false, message: "Error en búsqueda avanzada", error: err.message });
+    res.json({ message: "Búsqueda completada", data: enriched });
+  } catch (error) {
+    console.error("Error en advancedSearch:", error.message);
+    sendError(error, res);
   }
 };
 
+// === BULK CREATE (para carga masiva) ===
+export const bulkCreatePatient = async (req, res) => {
+  try {
+    const {
+      userId,
+      documentNumber,
+      birthDate,
+      age,
+      gender,
+      phone,
+      address,
+      emergencyContact,
+      bloodType,
+      allergies = [],
+      chronicDiseases = [],
+    } = req.body;
 
-export default {
-  createPatient,
-  getPatientById,
-  updatePatient,
-  updatePatientState,
-  listPatients,
-  createDiagnostic,
-  getPatientDiagnostics,
-  advancedSearch
+    if (!userId) {
+      return res.status(400).json({ message: "userId es obligatorio" });
+    }
+
+    // Validar que sea paciente
+    const userRes = await axios.get(`${USER_SERVICE_URL}/api/v1/users/${userId}`);
+    if (userRes.data.role !== "PACIENTE") {
+      return res.status(400).json({ message: "El usuario no es PACIENTE" });
+    }
+
+    const existing = await prisma.patients.findUnique({ where: { userId } });
+    if (existing) {
+      return res.status(200).json({ message: "Paciente ya existe", id: existing.id });
+    }
+
+    const patient = await prisma.patients.create({
+      data: {
+        userId,
+        documentNumber: documentNumber || `TEMP-${Date.now()}`,
+        birthDate: birthDate ? new Date(birthDate) : null,
+        age: age || calculateAge(new Date(birthDate || Date.now())),
+        gender: gender || "OTRO",
+        phone,
+        address,
+        emergencyContact,
+        bloodType,
+        allergies,
+        chronicDiseases,
+        state: "ACTIVE",
+      },
+    });
+
+    console.log(`Paciente perfil creado: ${patient.id} - userId: ${userId}`);
+    res.status(201).json(patient);
+
+  } catch (error) {
+    console.error("Error en bulkCreatePatient:", error.message);
+    sendError(error, res);
+  }
 };
