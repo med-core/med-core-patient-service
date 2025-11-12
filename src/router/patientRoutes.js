@@ -9,6 +9,7 @@ import {
   getPatientDiagnostics,
   advancedSearch,
   bulkCreatePatient,
+  getPatientProfile,
 } from "../controllers/PatientController.js";
 import { verifyToken } from "../middlewares/verifyToken.js";
 import upload from "../middlewares/upload.js"; // para archivos
@@ -17,6 +18,7 @@ const router = Router();
 
 router.post("/", createPatient);
 router.get("/:id", verifyToken, getPatientById);
+router.get("/:id/profile", verifyToken, getPatientProfile);
 router.put("/:id", verifyToken, updatePatient);
 router.patch("/:id/state", verifyToken, updatePatientState);
 router.get("/", verifyToken, listPatients);

@@ -9,7 +9,7 @@ export const attachUserFromToken = (req, res, next) => {
     if (!token) return next();
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = { id: decoded.id, role: decoded.role }; // Solo extraemos info necesaria
+    req.user = { id: decoded.id, role: decoded.role };
     next();
   } catch (err) {
     console.error("Error decodificando token en Patient Service:", err);

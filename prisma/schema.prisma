@@ -16,11 +16,7 @@ model Patient {
   age              Int
   gender           String
   phone            String?
-  address          String?
-  emergencyContact String?
-  bloodType        String?
-  allergies        String[]
-  chronicDiseases  String[]
+  address         String?
   state            State    @default(ACTIVE)
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt

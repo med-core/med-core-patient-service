@@ -1,14 +1,13 @@
-import { PrismaClient } from "@prisma/client";
+import { getPrismaClient } from "../config/database.js";
 import crypto from "crypto";
 import fs from "fs";
 import axios from "axios";
 import { sendError } from "../utils/errorHandler.js";
 
-const prisma = new PrismaClient();
+const prisma = getPrismaClient();
 
 const DIAGNOSTIC_SERVICE_URL = process.env.DIAGNOSTIC_SERVICE_URL || "http://med-core-diagnostic-service:3000";
 const USER_SERVICE_URL = process.env.USER_SERVICE_URL || "http://med-core-user-service:3000";
-const DEPARTMENT_SERVICE_URL = process.env.DEPARTMENT_SERVICE_URL || "http://med-core-department-service:3000";
 
 // === CALCULAR EDAD ===
 const calculateAge = (dateOfBirth) => {
@@ -188,13 +187,13 @@ export const createDiagnostic = async (req, res) => {
     );
 
     files.forEach(f => {
-      try { fs.unlinkSync(f.path); } catch {}
+      try { fs.unlinkSync(f.path); } catch { }
     });
 
     res.status(201).json({ message: "Diagnóstico creado", data: response.data });
   } catch (error) {
     files.forEach(f => {
-      try { fs.unlinkSync(f.path); } catch {}
+      try { fs.unlinkSync(f.path); } catch { }
     });
     console.error("Error creando diagnóstico:", error.message);
     sendError(error, res);
@@ -301,6 +300,7 @@ export const advancedSearch = async (req, res) => {
 // === BULK CREATE (para carga masiva) ===
 export const bulkCreatePatient = async (req, res) => {
   try {
+    const prisma = getPrismaClient();
     const {
       userId,
       documentNumber,
@@ -309,10 +309,6 @@ export const bulkCreatePatient = async (req, res) => {
       gender,
       phone,
       address,
-      emergencyContact,
-      bloodType,
-      allergies = [],
-      chronicDiseases = [],
     } = req.body;
 
     if (!userId) {
@@ -325,12 +321,12 @@ export const bulkCreatePatient = async (req, res) => {
       return res.status(400).json({ message: "El usuario no es PACIENTE" });
     }
 
-    const existing = await prisma.patients.findUnique({ where: { userId } });
+    const existing = await prisma.patient.findUnique({ where: { userId } });
     if (existing) {
       return res.status(200).json({ message: "Paciente ya existe", id: existing.id });
     }
 
-    const patient = await prisma.patients.create({
+    const patient = await prisma.patient.create({
       data: {
         userId,
         documentNumber: documentNumber || `TEMP-${Date.now()}`,
@@ -339,10 +335,6 @@ export const bulkCreatePatient = async (req, res) => {
         gender: gender || "OTRO",
         phone,
         address,
-        emergencyContact,
-        bloodType,
-        allergies,
-        chronicDiseases,
         state: "ACTIVE",
       },
     });
@@ -353,5 +345,50 @@ export const bulkCreatePatient = async (req, res) => {
   } catch (error) {
     console.error("Error en bulkCreatePatient:", error.message);
     sendError(error, res);
+  }
+};
+export const getPatientProfile = async (req, res) => {
+  try {
+    const id = req.user?.id; // ID del usuario autenticado (desde el token)
+
+    if (!id) {
+      return res.status(401).json({ message: "Usuario no autenticado." });
+    }
+
+    // 1 Buscar el registro del paciente por su userId
+    const patient = await prisma.patient.findUnique({
+      where: { userId: id },
+      select: {
+        birthDate: true,
+        age: true,
+        gender: true,
+        phone: true,
+        address: true,
+        state: true,
+      },
+    });
+
+    if (!patient) {
+      return res.status(404).json({ message: "Paciente no encontrado." });
+    }
+    // 2 Obtener los datos del usuario desde el User Service
+    const userResponse = await axios.get(
+      `${USER_SERVICE_URL}/api/v1/users/${id}`
+    );
+
+    const userData = userResponse.data;
+
+    // 3 Combinar ambos resultados
+    const profile = {
+      fullname: userData.fullname,
+      email: userData.email,
+      role: userData.role,
+      ...patient,
+    };
+
+    return res.status(200).json(profile);
+  } catch (error) {
+    console.error("Error al obtener perfil del paciente:", error.message);
+    return res.status(500).json({ message: "Error interno del servidor." });
   }
 };
